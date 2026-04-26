@@ -29,7 +29,7 @@ def clean_date(value):
     return str(pd.to_datetime(value).date())
 
 
-def safe_update_purchase(con, purchase_id, fields):
+def safe_safe_update_purchase(con, purchase_id, fields):
     existing_cols = {
         row[1] for row in con.execute("PRAGMA table_info(purchases)").fetchall()
     }
@@ -303,12 +303,12 @@ if selected_id:
     col1, col2, col3, col4 = st.columns(4)
 
     if col1.button("Approve for claim"):
-        safe_update_purchase(con, selected_id_int, {"claim_state": "approved"})
+        safe_safe_update_purchase(con, selected_id_int, {"claim_state": "approved"})
         st.success("Marked approved.")
         st.rerun()
 
     if col2.button("Ignore"):
-        safe_update_purchase(con, selected_id_int, {"claim_state": "ignored"})
+        safe_safe_update_purchase(con, selected_id_int, {"claim_state": "ignored"})
         st.success("Marked ignored.")
         st.rerun()
 
@@ -320,7 +320,7 @@ if selected_id:
             st.error(f"Could not generate packet yet: {e}")
 
     if col4.button("Mark submitted"):
-        safe_update_purchase(
+        safe_safe_update_purchase(
             con,
             selected_id_int,
             {
