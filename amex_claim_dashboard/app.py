@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
-from amex_claim_dashboard import storage
-from amex_claim_dashboard.rules import evaluate
+import storage
+from rules import evaluate
 
 st.set_page_config(page_title="Amex Return Protection Dashboard", layout="wide")
 
