@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
-from pathlib import Path
 import streamlit.components.v1 as components
 
 import storage
@@ -14,6 +13,11 @@ from config import ANNUAL_LIMIT
 try:
     import plaid
     from plaid.api import plaid_api
+    from plaid.api_client import ApiClient
+    from plaid.model.link_token_create_request import LinkTokenCreateRequest
+    from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+    from plaid.model.products import Products
+    from plaid.model.country_code import CountryCode
 except Exception:
     plaid = None
     plaid_api = None
@@ -48,15 +52,16 @@ def make_plaid_client():
     elif env == "production":
         host = plaid.Environment.Production
 
-    return plaid_api.PlaidApi(
-        plaid.Configuration(
-            host=host,
-            api_key={
-                "clientId": st.secrets["PLAID_CLIENT_ID"],
-                "secret": st.secrets["PLAID_SECRET"],
-            },
-        )
+    configuration = plaid.Configuration(
+        host=host,
+        api_key={
+            "clientId": st.secrets["PLAID_CLIENT_ID"],
+            "secret": st.secrets["PLAID_SECRET"],
+        },
     )
+
+    api_client = ApiClient(configuration)
+    return plaid_api.PlaidApi(api_client)
 
 
 with st.sidebar:
@@ -66,7 +71,6 @@ with st.sidebar:
         st.success("Plaid is connected in app settings.")
     else:
         st.warning("Plaid is not fully configured yet.")
-        st.caption("Make sure plaid-python is in requirements.txt and Streamlit secrets include PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV.")
 
     if st.button("Connect Amex"):
         client = make_plaid_client()
@@ -74,28 +78,26 @@ with st.sidebar:
         if not client:
             st.error("Plaid client could not load.")
         else:
-            request = {
-                "user": {"client_user_id": "user-id"},
-                "client_name": "Amex Dashboard",
-                "products": ["transactions"],
-                "country_codes": ["US"],
-                "language": "en",
-            }
-
             try:
+                request = LinkTokenCreateRequest(
+                    products=[Products("transactions")],
+                    client_name="Amex Dashboard",
+                    country_codes=[CountryCode("US")],
+                    language="en",
+                    user=LinkTokenCreateRequestUser(client_user_id="user-id"),
+                )
+
                 response = client.link_token_create(request)
                 link_token = response["link_token"]
 
                 components.html(f"""
                 <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
                 <script>
-                var handler = Plaid.create({{
+                const handler = Plaid.create({{
                     token: "{link_token}",
                     onSuccess: function(public_token, metadata) {{
-                        window.parent.postMessage({{
-                            type: "PLAID_PUBLIC_TOKEN",
-                            public_token: public_token
-                        }}, "*");
+                        alert("Plaid connected. Public token created. Next step is token exchange.");
+                        console.log(public_token);
                     }},
                     onExit: function(err, metadata) {{
                         console.log("Plaid Link exited", err, metadata);
@@ -105,7 +107,7 @@ with st.sidebar:
                 </script>
                 """, height=0)
 
-                st.info("Plaid popup should open. If it does not, check whether popups are blocked.")
+                st.info("Plaid popup should open.")
             except Exception as e:
                 st.error(f"Could not create Plaid link token: {e}")
 
