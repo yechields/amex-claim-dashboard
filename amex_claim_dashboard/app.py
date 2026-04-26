@@ -105,7 +105,7 @@ with st.sidebar:
                 }});
                 handler.open();
                 </script>
-                """, height=0)
+                """, height=500)
 
                 st.info("Plaid popup should open.")
             except Exception as e:
