@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+import requests
 
 import storage
 from storage import upsert_purchase, update_purchase, fetch_audit
@@ -20,6 +21,37 @@ st.caption("Local-first claim assistant. It prepares and organizes claims; you a
 
 def plaid_backend_available():
     return "PLAID_BACKEND_URL" in st.secrets
+
+
+# Show Plaid section BEFORE st.stop(), so it appears even when no purchases exist.
+st.subheader("Plaid Transactions")
+
+if st.button("Load Transactions"):
+    try:
+        res = requests.get(f"{st.secrets['PLAID_BACKEND_URL']}/transactions")
+        data = res.json()
+
+        if "transactions" in data:
+            df_txn = pd.DataFrame(data["transactions"])
+            cols = [
+                c for c in [
+                    "date",
+                    "name",
+                    "merchant_name",
+                    "amount",
+                    "account_id",
+                    "category",
+                    "pending",
+                ]
+                if c in df_txn.columns
+            ]
+
+            st.dataframe(df_txn[cols], use_container_width=True, hide_index=True)
+        else:
+            st.error(data)
+
+    except Exception as e:
+        st.error(f"Could not load transactions: {e}")
 
 
 with st.sidebar:
@@ -47,10 +79,12 @@ with st.sidebar:
 
     if amex_file and st.button("Import Amex CSV"):
         records, err = import_amex_csv(amex_file)
+
         if err:
             st.error(err)
         else:
             created = 0
+
             for rec in records:
                 _, is_new = upsert_purchase(con, rec)
                 created += int(is_new)
