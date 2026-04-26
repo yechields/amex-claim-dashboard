@@ -23,6 +23,12 @@ def plaid_backend_available():
     return "PLAID_BACKEND_URL" in st.secrets
 
 
+def clean_date(value):
+    if value is None or pd.isna(value):
+        return value
+    return str(pd.to_datetime(value).date())
+
+
 with st.sidebar:
     st.header("Auto Import")
 
@@ -55,6 +61,11 @@ with st.sidebar:
             created = 0
 
             for rec in records:
+                if "purchase_date" in rec:
+                    rec["purchase_date"] = clean_date(rec["purchase_date"])
+                elif "date" in rec:
+                    rec["purchase_date"] = clean_date(rec["date"])
+
                 _, is_new = upsert_purchase(con, rec)
                 created += int(is_new)
 
@@ -79,6 +90,11 @@ with st.sidebar:
                 continue
 
             for rec in records:
+                if "purchase_date" in rec:
+                    rec["purchase_date"] = clean_date(rec["purchase_date"])
+                elif "date" in rec:
+                    rec["purchase_date"] = clean_date(rec["date"])
+
                 _, is_new = upsert_purchase(con, rec)
                 total += int(is_new)
 
@@ -106,6 +122,9 @@ if st.button("Preview Plaid Transactions"):
                 st.warning("No transactions found.")
             else:
                 df_txn = pd.DataFrame(transactions)
+
+                if "date" in df_txn.columns:
+                    df_txn["date"] = df_txn["date"].apply(clean_date)
 
                 cols = [
                     c
@@ -151,9 +170,10 @@ if st.button("Import Plaid Transactions into Claim Tracker"):
                         continue
 
                     merchant = t.get("merchant_name") or t.get("name") or "Unknown"
+                    purchase_date = clean_date(t.get("date"))
 
                     rec = {
-                        "purchase_date": str(pd.to_datetime(t.get("date")).date()),                        
+                        "purchase_date": purchase_date,
                         "merchant": merchant,
                         "item": t.get("name") or merchant,
                         "amount": amount,
@@ -180,6 +200,9 @@ if purchases.empty:
     st.stop()
 
 
+if "purchase_date" in purchases.columns:
+    purchases["purchase_date"] = purchases["purchase_date"].apply(clean_date)
+
 rows = []
 
 for _, row in purchases.iterrows():
@@ -202,7 +225,6 @@ summary_cols[2].metric(
 )
 summary_cols[3].metric("Annual limit", f"${ANNUAL_LIMIT:,.0f}")
 
-
 status_filter = st.multiselect(
     "Filter by status",
     sorted(df["status"].dropna().unique()) if "status" in df else [],
@@ -213,7 +235,6 @@ view = df.copy()
 
 if status_filter:
     view = view[view["status"].isin(status_filter)]
-
 
 display_cols = [
     c
@@ -233,7 +254,6 @@ display_cols = [
 ]
 
 st.dataframe(view[display_cols], use_container_width=True, hide_index=True)
-
 
 st.subheader("Claim Actions")
 
@@ -284,7 +304,6 @@ if selected_id:
         )
         st.success("Marked submitted.")
         st.rerun()
-
 
 st.subheader("Audit Log")
 
