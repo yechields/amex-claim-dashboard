@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from pathlib import Path
+import streamlit.components.v1 as components
 
 import storage
 from storage import upsert_purchase, update_purchase, fetch_audit
@@ -63,17 +64,50 @@ with st.sidebar:
 
     if plaid_available():
         st.success("Plaid is connected in app settings.")
-        st.info("Next step: add Plaid Link token flow so you can connect Amex from this screen.")
     else:
         st.warning("Plaid is not fully configured yet.")
         st.caption("Make sure plaid-python is in requirements.txt and Streamlit secrets include PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV.")
 
-    if st.button("Test Plaid Setup"):
+    if st.button("Connect Amex"):
         client = make_plaid_client()
-        if client:
-            st.success("Plaid client loaded successfully.")
-        else:
+
+        if not client:
             st.error("Plaid client could not load.")
+        else:
+            request = {
+                "user": {"client_user_id": "user-id"},
+                "client_name": "Amex Dashboard",
+                "products": ["transactions"],
+                "country_codes": ["US"],
+                "language": "en",
+            }
+
+            try:
+                response = client.link_token_create(request)
+                link_token = response["link_token"]
+
+                components.html(f"""
+                <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+                <script>
+                var handler = Plaid.create({{
+                    token: "{link_token}",
+                    onSuccess: function(public_token, metadata) {{
+                        window.parent.postMessage({{
+                            type: "PLAID_PUBLIC_TOKEN",
+                            public_token: public_token
+                        }}, "*");
+                    }},
+                    onExit: function(err, metadata) {{
+                        console.log("Plaid Link exited", err, metadata);
+                    }}
+                }});
+                handler.open();
+                </script>
+                """, height=0)
+
+                st.info("Plaid popup should open. If it does not, check whether popups are blocked.")
+            except Exception as e:
+                st.error(f"Could not create Plaid link token: {e}")
 
     st.divider()
 
