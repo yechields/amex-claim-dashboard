@@ -153,7 +153,7 @@ if st.button("Import Plaid Transactions into Claim Tracker"):
                     merchant = t.get("merchant_name") or t.get("name") or "Unknown"
 
                     rec = {
-                        "purchase_date": t.get("date"),
+                        "purchase_date": str(pd.to_datetime(t.get("date")).date()),                        
                         "merchant": merchant,
                         "item": t.get("name") or merchant,
                         "amount": amount,
