@@ -15,6 +15,19 @@ st.set_page_config(page_title="Amex Return Protection Dashboard", layout="wide")
 
 con = storage.connect()
 
+def ensure_columns(con):
+    cols = {row[1] for row in con.execute("PRAGMA table_info(purchases)").fetchall()}
+
+    if "claim_state" not in cols:
+        con.execute("ALTER TABLE purchases ADD COLUMN claim_state TEXT DEFAULT 'monitoring'")
+
+    if "submitted_date" not in cols:
+        con.execute("ALTER TABLE purchases ADD COLUMN submitted_date TEXT")
+
+    con.commit()
+
+ensure_columns(con)
+
 st.title("Amex Return Protection Dashboard")
 st.write("Local-first claim assistant.")
 
