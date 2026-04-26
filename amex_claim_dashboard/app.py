@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import date
 
 import storage
-from storage import upsert_purchase, update_purchase, fetch_audit
+from storage import upsert_purchase, fetch_audit
 from importers import import_amex_csv, parse_receipt_file
 from rules import evaluate
 from packet import generate_packet
@@ -27,6 +27,26 @@ def clean_date(value):
     if value is None or pd.isna(value):
         return value
     return str(pd.to_datetime(value).date())
+
+
+def safe_update_purchase(con, purchase_id, fields):
+    existing_cols = {
+        row[1] for row in con.execute("PRAGMA table_info(purchases)").fetchall()
+    }
+
+    fields = {k: v for k, v in fields.items() if k in existing_cols}
+
+    if not fields:
+        return
+
+    set_clause = ", ".join([f"{k} = ?" for k in fields.keys()])
+    values = list(fields.values()) + [int(purchase_id)]
+
+    con.execute(
+        f"UPDATE purchases SET {set_clause} WHERE id = ?",
+        values,
+    )
+    con.commit()
 
 
 with st.sidebar:
@@ -249,6 +269,7 @@ display_cols = [
         "days_since_purchase",
         "claim_deadline",
         "reason",
+        "claim_state",
     ]
     if c in view.columns
 ]
@@ -282,12 +303,12 @@ if selected_id:
     col1, col2, col3, col4 = st.columns(4)
 
     if col1.button("Approve for claim"):
-        update_purchase(con, selected_id_int, {"claim_state": "approved"})
+        safe_update_purchase(con, selected_id_int, {"claim_state": "approved"})
         st.success("Marked approved.")
         st.rerun()
 
     if col2.button("Ignore"):
-        update_purchase(con, selected_id_int, {"claim_state": "ignored"})
+        safe_update_purchase(con, selected_id_int, {"claim_state": "ignored"})
         st.success("Marked ignored.")
         st.rerun()
 
@@ -299,7 +320,7 @@ if selected_id:
             st.error(f"Could not generate packet yet: {e}")
 
     if col4.button("Mark submitted"):
-        update_purchase(
+        safe_update_purchase(
             con,
             selected_id_int,
             {
@@ -309,6 +330,7 @@ if selected_id:
         )
         st.success("Marked submitted.")
         st.rerun()
+
 
 st.subheader("Audit Log")
 
