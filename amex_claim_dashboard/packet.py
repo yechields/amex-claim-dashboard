@@ -1,8 +1,45 @@
 from pathlib import Path
 from datetime import datetime
 import shutil
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from pathlib import Path
+from datetime import datetime
+import shutil
+
+CLAIM_DIR = Path("claim_packets")
+CLAIM_DIR.mkdir(exist_ok=True)
+
+
+def generate_packet(purchase):
+    merchant = str(purchase.get("merchant", "unknown")).replace("/", "-")
+    item = str(purchase.get("item", "item")).replace("/", "-")
+    packet_name = f"{merchant}_{item}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    packet_folder = CLAIM_DIR / packet_name
+    packet_folder.mkdir(parents=True, exist_ok=True)
+
+    summary_path = packet_folder / "claim_summary.txt"
+
+    lines = [
+        "Amex Return Protection Claim Packet",
+        "",
+        f"Merchant: {purchase.get('merchant', '')}",
+        f"Item: {purchase.get('item', '')}",
+        f"Purchase Date: {purchase.get('purchase_date', '')}",
+        f"Amount: {purchase.get('amount', '')}",
+        f"Card: {purchase.get('card', '')}",
+        f"Status: {purchase.get('status', '')}",
+        "",
+        "Checklist:",
+        "- Receipt included",
+        "- Amex transaction included",
+        "- Merchant return attempted/refused",
+        "- Item unused/new condition",
+        "- Within 90 days of purchase",
+        "- Under applicable Amex Return Protection limits",
+    ]
+
+    summary_path.write_text("\n".join(lines))
+
+    return str(packet_folder)
 from rules import evaluate
 
 PACKET_DIR = Path('claim_packets')
