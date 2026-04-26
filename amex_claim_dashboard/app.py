@@ -263,7 +263,9 @@ selected_id = st.selectbox(
 )
 
 if selected_id:
-    rec = df[df["id"] == selected_id].iloc[0].to_dict()
+    selected_id_int = int(selected_id)
+
+    rec = df[df["id"] == selected_id_int].iloc[0].to_dict()
     latest = evaluate(rec)
 
     st.write(
@@ -280,23 +282,26 @@ if selected_id:
     col1, col2, col3, col4 = st.columns(4)
 
     if col1.button("Approve for claim"):
-        update_purchase(con, selected_id, {"claim_state": "approved"})
+        update_purchase(con, selected_id_int, {"claim_state": "approved"})
         st.success("Marked approved.")
         st.rerun()
 
     if col2.button("Ignore"):
-        update_purchase(con, selected_id, {"claim_state": "ignored"})
+        update_purchase(con, selected_id_int, {"claim_state": "ignored"})
         st.success("Marked ignored.")
         st.rerun()
 
     if col3.button("Generate claim packet"):
-        path = generate_packet(rec)
-        st.success(f"Created packet: {path}")
+        try:
+            path = generate_packet(rec)
+            st.success(f"Created packet: {path}")
+        except Exception as e:
+            st.error(f"Could not generate packet yet: {e}")
 
     if col4.button("Mark submitted"):
         update_purchase(
             con,
-            selected_id,
+            selected_id_int,
             {
                 "claim_state": "submitted",
                 "submitted_date": str(date.today()),
