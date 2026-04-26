@@ -72,7 +72,7 @@ with st.sidebar:
     else:
         st.warning("Plaid is not fully configured yet.")
 
-    if st.button("Connect Amex"):
+    if st.button("if st.button("Connect Amex"):     st.markdown(         f"[Open Plaid Connect]({st.secrets['PLAID_BACKEND_URL']}/link)",         unsafe_allow_html=True     )"):
         client = make_plaid_client()
 
         if not client:
