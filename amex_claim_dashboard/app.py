@@ -1,245 +1,72 @@
 import streamlit as st
-import pandas as pd
-from datetime import date
 import requests
 
-import storage
-from storage import upsert_purchase, update_purchase, fetch_audit
-from importers import import_amex_csv, parse_receipt_file
-from rules import evaluate
-from packet import generate_packet
-from config import ANNUAL_LIMIT
-
-
-st.set_page_config(page_title="Amex Return Protection Dashboard", layout="wide")
-
-con = storage.connect()
+st.set_page_config(page_title="Amex Return Protection Dashboard")
 
 st.title("Amex Return Protection Dashboard")
-st.caption("Local-first claim assistant. It prepares and organizes claims; you approve and submit.")
+st.write("Local-first claim assistant.")
 
-
-def plaid_backend_available():
-    return "PLAID_BACKEND_URL" in st.secrets
-
-
-# Show Plaid section BEFORE st.stop(), so it appears even when no purchases exist.
-st.subheader("Plaid Transactions")
-
-if st.button("Load Transactions"):
-    try:
-        res = requests.get(f"{st.secrets['PLAID_BACKEND_URL']}/transactions")
-        data = res.json()
-
-        if "transactions" in data:
-            df_txn = pd.DataFrame(data["transactions"])
-            cols = [
-                c for c in [
-                    "date",
-                    "name",
-                    "merchant_name",
-                    "amount",
-                    "account_id",
-                    "category",
-                    "pending",
-                ]
-                if c in df_txn.columns
-            ]
-
-            st.dataframe(df_txn[cols], use_container_width=True, hide_index=True)
-        else:
-            st.error(data)
-
-    except Exception as e:
-        st.error(f"Could not load transactions: {e}")
-
-
+# =========================
+# SIDEBAR (PLAID)
+# =========================
 with st.sidebar:
     st.header("Auto Import")
 
-    if plaid_backend_available():
+    if "PLAID_BACKEND_URL" in st.secrets:
         st.success("Plaid backend is connected.")
     else:
-        st.warning("Plaid backend is not configured yet.")
+        st.error("Missing PLAID_BACKEND_URL in secrets")
 
+    # Button → opens Plaid Link page
     if st.button("Connect Amex"):
-        if plaid_backend_available():
-            st.markdown(
-                f"[Open Plaid Connect]({st.secrets['PLAID_BACKEND_URL']}/link)",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.error("Missing PLAID_BACKEND_URL in Streamlit secrets.")
-
-    st.divider()
-
-    st.header("Import")
-
-    amex_file = st.file_uploader("Upload Amex transaction CSV", type=["csv"], key="amex")
-
-    if amex_file and st.button("Import Amex CSV"):
-        records, err = import_amex_csv(amex_file)
-
-        if err:
-            st.error(err)
-        else:
-            created = 0
-
-            for rec in records:
-                _, is_new = upsert_purchase(con, rec)
-                created += int(is_new)
-
-            st.success(f"Imported {len(records)} rows, {created} new purchases.")
-            st.rerun()
-
-    receipt_files = st.file_uploader(
-        "Upload receipt/order files",
-        type=["eml", "html", "htm", "txt", "csv"],
-        accept_multiple_files=True,
-    )
-
-    if receipt_files and st.button("Import receipts"):
-        total = 0
-        warnings = []
-
-        for f in receipt_files:
-            records, err = parse_receipt_file(f)
-
-            if err:
-                warnings.append(f"{f.name}: {err}")
-                continue
-
-            for rec in records:
-                _, is_new = upsert_purchase(con, rec)
-                total += int(is_new)
-
-        st.success(f"Imported {total} new receipt-derived purchases.")
-
-        for w in warnings:
-            st.warning(w)
-
-        st.rerun()
-
-
-purchases = pd.read_sql_query("SELECT * FROM purchases ORDER BY purchase_date DESC", con)
-
-if purchases.empty:
-    st.info("Import an Amex CSV or receipt files to begin. Sample CSV is included in sample_exports/sample_amex.csv.")
-    st.stop()
-
-
-rows = []
-
-for _, row in purchases.iterrows():
-    r = row.to_dict()
-    r.update(evaluate(r))
-    rows.append(r)
-
-df = pd.DataFrame(rows)
-
-
-summary_cols = st.columns(4)
-
-summary_cols[0].metric("Tracked purchases", len(df))
-summary_cols[1].metric(
-    "Ready/possible claims",
-    int((df["status"] == "Claim window").sum()) if "status" in df else 0,
-)
-summary_cols[2].metric(
-    "Urgent",
-    int((df["status"] == "Urgent").sum()) if "status" in df else 0,
-)
-summary_cols[3].metric("Annual limit", f"${ANNUAL_LIMIT:,.0f}")
-
-
-status_filter = st.multiselect(
-    "Filter by status",
-    sorted(df["status"].dropna().unique()) if "status" in df else [],
-    default=[],
-)
-
-view = df.copy()
-
-if status_filter:
-    view = view[view["status"].isin(status_filter)]
-
-
-display_cols = [
-    c
-    for c in [
-        "id",
-        "purchase_date",
-        "merchant",
-        "item",
-        "amount",
-        "card",
-        "status",
-        "days_since_purchase",
-        "claim_deadline",
-        "reason",
-    ]
-    if c in view.columns
-]
-
-st.dataframe(view[display_cols], use_container_width=True, hide_index=True)
-
-
-st.subheader("Claim Actions")
-
-selected_id = st.selectbox(
-    "Select purchase ID",
-    options=view["id"].tolist() if "id" in view else [],
-)
-
-if selected_id:
-    rec = df[df["id"] == selected_id].iloc[0].to_dict()
-    latest = evaluate(rec)
-
-    st.write(
-        {
-            "merchant": rec.get("merchant"),
-            "item": rec.get("item"),
-            "amount": rec.get("amount"),
-            "status": latest.get("status"),
-            "reason": latest.get("reason"),
-            "claim_deadline": latest.get("claim_deadline"),
-        }
-    )
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    if col1.button("Approve for claim"):
-        update_purchase(con, selected_id, {"claim_state": "approved"})
-        st.success("Marked approved.")
-        st.rerun()
-
-    if col2.button("Ignore"):
-        update_purchase(con, selected_id, {"claim_state": "ignored"})
-        st.success("Marked ignored.")
-        st.rerun()
-
-    if col3.button("Generate claim packet"):
-        path = generate_packet(rec)
-        st.success(f"Created packet: {path}")
-
-    if col4.button("Mark submitted"):
-        update_purchase(
-            con,
-            selected_id,
-            {
-                "claim_state": "submitted",
-                "submitted_date": str(date.today()),
-            },
+        st.markdown(
+            f"[Open Plaid Connect]({st.secrets['PLAID_BACKEND_URL']}/link)",
+            unsafe_allow_html=True
         )
-        st.success("Marked submitted.")
-        st.rerun()
 
+# =========================
+# MAIN IMPORT SECTION
+# =========================
+st.divider()
 
-st.subheader("Audit Log")
+st.header("Import")
 
-audit = fetch_audit(con)
+amex_file = st.file_uploader(
+    "Upload Amex transaction CSV",
+    type=["csv"]
+)
 
-if audit:
-    st.dataframe(pd.DataFrame(audit), use_container_width=True, hide_index=True)
-else:
-    st.caption("No audit entries yet.")
+if amex_file:
+    st.success("File uploaded (not processed in this step)")
+
+# =========================
+# LOAD PLAID TRANSACTIONS
+# =========================
+st.divider()
+
+st.header("Transactions")
+
+if st.button("Load Transactions"):
+    try:
+        res = requests.get(
+            f"{st.secrets['PLAID_BACKEND_URL']}/transactions"
+        )
+        data = res.json()
+
+        if "error" in data:
+            st.error(data["error"])
+        else:
+            transactions = data.get("transactions", [])
+
+            if not transactions:
+                st.warning("No transactions found")
+            else:
+                st.success(f"Loaded {len(transactions)} transactions")
+
+                for t in transactions[:25]:
+                    st.write(
+                        f"{t.get('date')} — {t.get('name')} — ${t.get('amount')}"
+                    )
+
+    except Exception as e:
+        st.error(f"Error: {e}")
