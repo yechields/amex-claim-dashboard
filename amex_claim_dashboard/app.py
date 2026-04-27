@@ -2,15 +2,15 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+
 import storage
 from rules import evaluate
 
+
 st.set_page_config(page_title="Amex Return Protection Dashboard", layout="wide")
 
-# -----------------------
-# DB SETUP
-# -----------------------
 con = storage.connect()
+
 
 def ensure_columns(con):
     cols = {row[1] for row in con.execute("PRAGMA table_info(purchases)").fetchall()}
@@ -23,173 +23,248 @@ def ensure_columns(con):
 
     con.commit()
 
+
 ensure_columns(con)
 
-# -----------------------
-# HELPERS
-# -----------------------
+
+def clean_date(value):
+    if value is None or pd.isna(value):
+        return value
+    return str(pd.to_datetime(value).date())
+
+
 def plaid_backend_available():
     return "PLAID_BACKEND_URL" in st.secrets
 
-def get_transactions():
-    url = st.secrets["PLAID_BACKEND_URL"] + "/transactions"
-    res = requests.get(url)
-    return res.json()["transactions"]
 
-def clean_transactions(txns):
-    df = pd.DataFrame(txns)
+def update_claim_state(purchase_id, claim_state):
+    if claim_state == "submitted":
+        con.execute(
+            "UPDATE purchases SET claim_state = ?, submitted_date = ? WHERE id = ?",
+            (claim_state, str(datetime.now().date()), int(purchase_id)),
+        )
+    else:
+        con.execute(
+            "UPDATE purchases SET claim_state = ? WHERE id = ?",
+            (claim_state, int(purchase_id)),
+        )
 
-    if df.empty:
-        return df
+    con.commit()
 
-    df["purchase_date"] = pd.to_datetime(df["date"]).dt.date
-    df["merchant"] = df["name"]
-    df["amount"] = df["amount"].astype(float)
-
-    return df
 
 def is_junk(row):
-    name = str(row.get("merchant", "")).lower()
+    merchant = str(row.get("merchant", "")).lower()
 
     junk_words = [
-        "payment", "thank", "deposit", "credit", "transfer",
-        "withdrawal", "interest", "cd deposit"
+        "payment",
+        "thank",
+        "deposit",
+        "credit card",
+        "transfer",
+        "interest",
+        "ach",
+        "cd deposit",
     ]
 
-    return any(word in name for word in junk_words)
+    return any(word in merchant for word in junk_words)
 
-def get_recommendation(row):
+
+def recommendation_for(row):
     if is_junk(row):
         return "ignore"
 
-    amt = row.get("amount", 0)
+    amount = float(row.get("amount") or 0)
 
-    if amt < 20:
+    if amount < 20:
         return "ignore"
 
-    if amt >= 100:
+    if amount >= 100:
         return "likely_claim"
 
     return "maybe"
 
-def update_purchase(con, purchase_id, claim_state):
-    con.execute(
-        "UPDATE purchases SET claim_state = ? WHERE id = ?",
-        (claim_state, purchase_id)
-    )
-    con.commit()
 
-# -----------------------
-# UI
-# -----------------------
 st.title("Amex Return Protection Dashboard")
 st.write("Local-first claim assistant.")
 
-# -----------------------
-# AUTO IMPORT
-# -----------------------
-st.sidebar.header("Auto Import")
 
-if plaid_backend_available():
-    st.sidebar.success("Plaid backend is connected.")
-else:
-    st.sidebar.warning("Plaid backend not configured.")
+with st.sidebar:
+    st.header("Auto Import")
 
-if st.sidebar.button("Load Transactions"):
-    txns = get_transactions()
-    df = clean_transactions(txns)
+    if plaid_backend_available():
+        st.success("Plaid backend is connected.")
+    else:
+        st.error("Missing PLAID_BACKEND_URL in secrets")
 
-    if not df.empty:
-        for _, row in df.iterrows():
-            con.execute("""
-                INSERT INTO purchases (purchase_date, merchant, amount, card)
-                VALUES (?, ?, ?, ?)
-            """, (
-                str(row["purchase_date"]),
-                row["merchant"],
-                float(row["amount"]),
-                "plaid"
-            ))
-        con.commit()
-        st.success(f"Loaded {len(df)} transactions")
+    if st.button("Connect Amex"):
+        if plaid_backend_available():
+            st.markdown(
+                f"[Open Plaid Connect]({st.secrets['PLAID_BACKEND_URL']}/link)",
+                unsafe_allow_html=True,
+            )
 
-# -----------------------
-# LOAD DATA
-# -----------------------
-df = pd.read_sql("SELECT * FROM purchases ORDER BY purchase_date DESC", con)
+    if st.button("Load Transactions"):
+        try:
+            res = requests.get(f"{st.secrets['PLAID_BACKEND_URL']}/transactions")
+            data = res.json()
 
-if not df.empty:
-    df["recommendation"] = df.apply(get_recommendation, axis=1)
+            if "error" in data:
+                st.error(data["error"])
+            else:
+                transactions = data.get("transactions", [])
+                created = 0
 
-# -----------------------
-# FILTER
-# -----------------------
+                for t in transactions:
+                    amount = float(t.get("amount") or 0)
+
+                    if amount <= 0:
+                        continue
+
+                    merchant = t.get("merchant_name") or t.get("name") or "Unknown"
+                    purchase_date = clean_date(t.get("date"))
+
+                    con.execute(
+                        """
+                        INSERT INTO purchases
+                        (purchase_date, merchant, amount, card, claim_state)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            purchase_date,
+                            merchant,
+                            amount,
+                            t.get("account_id"),
+                            "monitoring",
+                        ),
+                    )
+
+                    created += 1
+
+                con.commit()
+                st.success(f"Loaded {created} purchase transactions.")
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"Could not load transactions: {e}")
+
+
+df = pd.read_sql_query("SELECT * FROM purchases ORDER BY purchase_date DESC", con)
+
+if df.empty:
+    st.info("No purchases yet. Connect Plaid and click Load Transactions.")
+    st.stop()
+
+
+if "purchase_date" in df.columns:
+    df["purchase_date"] = df["purchase_date"].apply(clean_date)
+
+df["recommendation"] = df.apply(recommendation_for, axis=1)
+
+rows = []
+
+for _, row in df.iterrows():
+    rec = row.to_dict()
+
+    if "purchase_date" in rec:
+        rec["purchase_date"] = clean_date(rec["purchase_date"])
+
+    try:
+        rec.update(evaluate(rec))
+    except Exception:
+        pass
+
+    rows.append(rec)
+
+df = pd.DataFrame(rows)
+
+
 st.subheader("Transactions")
 
 filter_option = st.selectbox(
-    "Filter by status",
-    ["all", "likely_claim", "maybe", "ignore"]
+    "Filter",
+    ["all", "likely_claim", "maybe", "ignore", "approved", "submitted"],
 )
 
 view = df.copy()
 
-if filter_option != "all":
+if filter_option in ["likely_claim", "maybe", "ignore"]:
     view = view[view["recommendation"] == filter_option]
 
-st.dataframe(view, use_container_width=True)
+if filter_option in ["approved", "submitted"]:
+    view = view[view["claim_state"] == filter_option]
 
-# -----------------------
-# CLAIM ACTIONS
-# -----------------------
+
+display_cols = [
+    c
+    for c in [
+        "id",
+        "purchase_date",
+        "merchant",
+        "amount",
+        "status",
+        "claim_deadline",
+        "claim_state",
+        "recommendation",
+    ]
+    if c in view.columns
+]
+
+st.dataframe(view[display_cols], use_container_width=True, hide_index=True)
+
+
 st.subheader("Claim Actions")
 
-if not view.empty:
-    selected_id = st.selectbox(
-        "Select purchase ID",
-        options=view["id"].tolist()
-    )
+selected_id = st.selectbox(
+    "Select purchase ID",
+    options=view["id"].tolist() if "id" in view else [],
+)
 
+if selected_id:
     selected_id_int = int(selected_id)
 
     rec = df[df["id"] == selected_id_int].iloc[0].to_dict()
-    latest = evaluate(rec)
 
-    st.json(latest)
+    if "purchase_date" in rec:
+        rec["purchase_date"] = clean_date(rec["purchase_date"])
 
-    col1, col2, col3, col4 = st.columns(4)
+    try:
+        latest = evaluate(rec)
+    except Exception:
+        latest = {}
 
-    with col1:
-        if st.button("Approve for claim"):
-            update_purchase(con, selected_id_int, "approved")
-            st.success("Marked as approved")
-            st.rerun()
+    st.write(
+        {
+            "merchant": rec.get("merchant"),
+            "amount": rec.get("amount"),
+            "claim_state": rec.get("claim_state"),
+            "recommendation": rec.get("recommendation"),
+            "status": latest.get("status"),
+            "claim_deadline": latest.get("claim_deadline"),
+        }
+    )
 
-    with col2:
-        if st.button("Ignore"):
-            update_purchase(con, selected_id_int, "ignored")
-            st.success("Ignored")
-            st.rerun()
+    col1, col2, col3 = st.columns(3)
 
-    with col3:
-        if st.button("Generate claim packet"):
-            st.info("Coming next step")
+    if col1.button("Approve for claim"):
+        update_claim_state(selected_id_int, "approved")
+        st.success("Marked approved.")
+        st.rerun()
 
-    with col4:
-        if st.button("Mark submitted"):
-            con.execute(
-                "UPDATE purchases SET claim_state = ?, submitted_date = ? WHERE id = ?",
-                ("submitted", str(datetime.now().date()), selected_id_int)
-            )
-            con.commit()
-            st.success("Marked submitted")
-            st.rerun()
+    if col2.button("Ignore"):
+        update_claim_state(selected_id_int, "ignored")
+        st.success("Marked ignored.")
+        st.rerun()
 
-# -----------------------
-# AUDIT LOG
-# -----------------------
+    if col3.button("Mark submitted"):
+        update_claim_state(selected_id_int, "submitted")
+        st.success("Marked submitted.")
+        st.rerun()
+
+
 st.subheader("Audit Log")
 
-audit = pd.read_sql("SELECT * FROM audit_log ORDER BY id DESC LIMIT 20", con)
-
-if not audit.empty:
-    st.dataframe(audit, use_container_width=True)
+try:
+    audit = pd.read_sql_query("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50", con)
+    st.dataframe(audit, use_container_width=True, hide_index=True)
+except Exception:
+    st.caption("No audit log available yet.")
